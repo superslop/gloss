@@ -11,10 +11,12 @@ use std::process::ExitCode;
 use gloss::Interpreter;
 
 const HELP: &str = "\
-Gloss 0.1.0 — a small programming language implemented in Rust.
+Gloss — a small programming language implemented in Rust.
 
 USAGE:
-    gloss run <file.gloss>    Execute a Gloss source file
+    gloss run <file.gloss> [args...]    Execute a Gloss source file;
+                                        extra args are visible to the
+                                        program through args()
     gloss repl                Start the interactive REPL
     gloss                     Start the interactive REPL
     gloss --help              Show this help text
@@ -31,7 +33,12 @@ fn main() -> ExitCode {
         None => run_repl(),
         Some("repl") => run_repl(),
         Some("run") => match arguments.get(1) {
-            Some(path) => run_file(path),
+            Some(path) => {
+                // Everything after the script path belongs to the
+                // Gloss program and is exposed via `args()`.
+                let script_args: Vec<String> = arguments.iter().skip(2).cloned().collect();
+                run_file(path, &script_args)
+            }
             None => {
                 eprintln!("error: 'gloss run' needs a file path");
                 eprintln!("usage: gloss run <file.gloss>");
@@ -56,7 +63,7 @@ fn main() -> ExitCode {
 
 /// Executes one Gloss file. Anything the program printed goes to
 /// stdout; any error goes to stderr and the exit code is non-zero.
-fn run_file(path: &str) -> ExitCode {
+fn run_file(path: &str, script_args: &[String]) -> ExitCode {
     let source = match std::fs::read_to_string(path) {
         Ok(source) => source,
         Err(error) => {
@@ -66,6 +73,15 @@ fn run_file(path: &str) -> ExitCode {
     };
 
     let mut interpreter = Interpreter::new();
+    interpreter.set_args(script_args.to_vec());
+    // Relative `import` paths in the script resolve against the
+    // script's own directory, not the caller's working directory.
+    let script_path = std::path::Path::new(path);
+    if let Some(parent) = script_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            interpreter.set_base_dir(parent.to_path_buf());
+        }
+    }
     let result = interpreter.interpret(&source);
 
     // Show whatever the program printed, even if it then failed.

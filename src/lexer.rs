@@ -6,6 +6,16 @@
 
 use crate::error::GlossError;
 
+/// One piece of an interpolated string literal: plain text, or the
+/// token list of an embedded `{expression}` (tokenized recursively by
+/// the lexer; the parser turns it into an expression). `{{` and `}}`
+/// in the source are escapes that produce literal braces in text.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StrPart {
+    Text(String),
+    Expr(Vec<Token>),
+}
+
 /// The kind of a token. Keywords get their own variants so the parser
 /// never has to compare identifier strings.
 #[derive(Debug, Clone, PartialEq)]
@@ -20,6 +30,7 @@ pub enum TokenKind {
     Comma,
     Semicolon,
     Colon,
+    Dot,
 
     // Operators
     Plus,
@@ -37,10 +48,13 @@ pub enum TokenKind {
     GreaterEqual,
     AndAnd,
     OrOr,
+    Pipe,
+    FatArrow,
 
     // Literals and names
     Number(f64),
     Str(String),
+    InterpStr(Vec<StrPart>),
     Identifier(String),
 
     // Keywords
@@ -55,6 +69,10 @@ pub enum TokenKind {
     True,
     False,
     Nil,
+    Match,
+    Try,
+    Catch,
+    Import,
 
     Eof,
 }
@@ -133,6 +151,10 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, GlossError> {
                 tokens.push(Token::new(TokenKind::Colon, ":".to_string(), start_line));
                 pos += 1;
             }
+            '.' => {
+                tokens.push(Token::new(TokenKind::Dot, ".".to_string(), start_line));
+                pos += 1;
+            }
             '+' => {
                 tokens.push(Token::new(TokenKind::Plus, "+".to_string(), start_line));
                 pos += 1;
@@ -173,7 +195,10 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, GlossError> {
                 }
             }
             '=' => {
-                if peek_next(pos) == Some('=') {
+                if peek_next(pos) == Some('>') {
+                    tokens.push(Token::new(TokenKind::FatArrow, "=>".to_string(), start_line));
+                    pos += 2;
+                } else if peek_next(pos) == Some('=') {
                     tokens.push(Token::new(TokenKind::EqualEqual, "==".to_string(), start_line));
                     pos += 2;
                 } else {
@@ -215,20 +240,29 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, GlossError> {
                 }
             }
             '|' => {
-                if peek_next(pos) == Some('|') {
+                if peek_next(pos) == Some('>') {
+                    tokens.push(Token::new(TokenKind::Pipe, "|>".to_string(), start_line));
+                    pos += 2;
+                } else if peek_next(pos) == Some('|') {
                     tokens.push(Token::new(TokenKind::OrOr, "||".to_string(), start_line));
                     pos += 2;
                 } else {
                     return Err(GlossError::lex(
                         start_line,
-                        "unexpected character '|' (did you mean '||'?)",
+                        "unexpected character '|' (did you mean '||' or '|>'?)",
                     ));
                 }
             }
 
-            // String literal with the escapes \n, \", \\ (plus \t and \r).
+            // String literal with the escapes \n, \", \\ (plus \t and \r)
+            // and interpolation: `{expr}` inserts a value, and `{{` /
+            // `}}` produce literal braces. A string with at least one
+            // interpolation becomes an InterpStr token; the embedded
+            // expression source is tokenized recursively right here.
             '"' => {
-                let mut value = String::new();
+                let mut text = String::new();
+                let mut parts: Vec<StrPart> = Vec::new();
+                let mut has_interp = false;
                 let mut raw = String::from("\"");
                 pos += 1; // opening quote
                 let mut closed = false;
@@ -245,11 +279,11 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, GlossError> {
                     if ch == '\\' {
                         let escaped = peek_next(pos);
                         match escaped {
-                            Some('n') => value.push('\n'),
-                            Some('t') => value.push('\t'),
-                            Some('r') => value.push('\r'),
-                            Some('"') => value.push('"'),
-                            Some('\\') => value.push('\\'),
+                            Some('n') => text.push('\n'),
+                            Some('t') => text.push('\t'),
+                            Some('r') => text.push('\r'),
+                            Some('"') => text.push('"'),
+                            Some('\\') => text.push('\\'),
                             _ => {
                                 return Err(GlossError::lex(
                                     line,
@@ -262,8 +296,53 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, GlossError> {
                             raw.push(e);
                         }
                         pos += 2;
+                    } else if ch == '{' && peek_next(pos) == Some('{') {
+                        // `{{` is an escaped literal brace.
+                        text.push('{');
+                        raw.push_str("{{");
+                        pos += 2;
+                    } else if ch == '{' {
+                        // Start of an interpolation. Find the matching
+                        // close brace, tokenize the inside, and keep the
+                        // tokens as a StrPart for the parser.
+                        let close = match find_interp_close(&chars, pos) {
+                            Some(close) => close,
+                            None => {
+                                return Err(GlossError::lex(
+                                    start_line,
+                                    "unterminated interpolation in string (missing '}')",
+                                ));
+                            }
+                        };
+                        let expr_source: String = chars[pos + 1..close].iter().collect();
+                        if expr_source.trim().is_empty() {
+                            return Err(GlossError::lex(
+                                start_line,
+                                "empty interpolation in string ('{}')",
+                            ));
+                        }
+                        for raw_char in &chars[pos..=close] {
+                            raw.push(*raw_char);
+                        }
+                        let mut inner_tokens = tokenize(&expr_source)?;
+                        for token in inner_tokens.iter_mut() {
+                            // Inner tokens are numbered from line 1;
+                            // shift them onto the string's line.
+                            token.line += start_line - 1;
+                        }
+                        if !text.is_empty() {
+                            parts.push(StrPart::Text(std::mem::take(&mut text)));
+                        }
+                        parts.push(StrPart::Expr(inner_tokens));
+                        has_interp = true;
+                        pos = close + 1;
+                    } else if ch == '}' && peek_next(pos) == Some('}') {
+                        // `}}` is an escaped literal brace.
+                        text.push('}');
+                        raw.push_str("}}");
+                        pos += 2;
                     } else {
-                        value.push(ch);
+                        text.push(ch);
                         raw.push(ch);
                         pos += 1;
                     }
@@ -271,7 +350,14 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, GlossError> {
                 if !closed {
                     return Err(GlossError::lex(start_line, "unterminated string"));
                 }
-                tokens.push(Token::new(TokenKind::Str(value), raw, start_line));
+                if has_interp {
+                    if !text.is_empty() {
+                        parts.push(StrPart::Text(text));
+                    }
+                    tokens.push(Token::new(TokenKind::InterpStr(parts), raw, start_line));
+                } else {
+                    tokens.push(Token::new(TokenKind::Str(text), raw, start_line));
+                }
             }
 
             // Number literal: digits with an optional fractional part.
@@ -331,6 +417,10 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, GlossError> {
                     "true" => TokenKind::True,
                     "false" => TokenKind::False,
                     "nil" => TokenKind::Nil,
+                    "match" => TokenKind::Match,
+                    "try" => TokenKind::Try,
+                    "catch" => TokenKind::Catch,
+                    "import" => TokenKind::Import,
                     _ => TokenKind::Identifier(text.clone()),
                 };
                 tokens.push(Token::new(kind, text, start_line));
@@ -347,4 +437,63 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, GlossError> {
 
     tokens.push(Token::new(TokenKind::Eof, "".to_string(), line));
     Ok(tokens)
+}
+
+/// Finds the `}` that closes the interpolation opened at `open`
+/// (the index of a `{` character). Nested braces count towards the
+/// depth, and braces inside string literals are skipped — including
+/// interpolations nested inside those strings. Strings in Gloss do
+/// not span lines, so a newline also means "not found".
+fn find_interp_close(chars: &[char], open: usize) -> Option<usize> {
+    let mut depth: usize = 0;
+    let mut in_string = false;
+    let mut i = open;
+    while i < chars.len() {
+        let c = chars[i];
+        if in_string {
+            if c == '\\' {
+                i += 2;
+                continue;
+            }
+            if c == '"' {
+                in_string = false;
+                i += 1;
+                continue;
+            }
+            if c == '{' {
+                // A nested interpolation inside this inner string:
+                // jump past its matching close brace.
+                match find_interp_close(chars, i) {
+                    Some(end) => {
+                        i = end + 1;
+                        continue;
+                    }
+                    None => return None,
+                }
+            }
+            if c == '\n' {
+                return None;
+            }
+            i += 1;
+            continue;
+        }
+        match c {
+            '"' => {
+                in_string = true;
+            }
+            '{' => {
+                depth += 1;
+            }
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            '\n' => return None,
+            _ => {}
+        }
+        i += 1;
+    }
+    None
 }

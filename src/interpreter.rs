@@ -10,9 +10,10 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::rc::Rc;
 
-use crate::ast::{BinaryOp, Expr, LogicalOp, Stmt, UnaryOp};
+use crate::ast::{BinaryOp, Expr, InterpPart, LogicalOp, Pattern, Stmt, UnaryOp};
 use crate::environment::Environment;
 use crate::error::GlossError;
 use crate::lexer;
@@ -39,6 +40,14 @@ pub struct Interpreter {
     environment: Rc<RefCell<Environment>>,
     output: String,
     call_depth: usize,
+    /// Directory that relative `import` paths (and REPL/file lookups)
+    /// start from. Set by the CLI to the main script's directory.
+    base_dir: Option<PathBuf>,
+    /// Arguments exposed to Gloss code through the `args()` builtin.
+    script_args: Vec<String>,
+    /// Canonical paths of files currently being imported, used to
+    /// detect import cycles.
+    import_stack: Vec<PathBuf>,
 }
 
 impl Default for Interpreter {
@@ -49,21 +58,36 @@ impl Default for Interpreter {
 
 impl Interpreter {
     /// Creates an interpreter with a fresh global environment that has
-    /// the builtin functions (`print`, `len`, `push`) defined.
+    /// all the builtin functions (the standard library) defined.
     pub fn new() -> Interpreter {
         let globals = Environment::new_global();
         {
             let mut global_env = globals.borrow_mut();
-            global_env.define("print", Value::Builtin(Builtin::Print));
-            global_env.define("len", Value::Builtin(Builtin::Len));
-            global_env.define("push", Value::Builtin(Builtin::Push));
+            for builtin in Builtin::all() {
+                global_env.define(builtin.name(), Value::Builtin(builtin));
+            }
         }
         Interpreter {
             environment: globals.clone(),
             globals,
             output: String::new(),
             call_depth: 0,
+            base_dir: None,
+            script_args: Vec::new(),
+            import_stack: Vec::new(),
         }
+    }
+
+    /// Sets the directory that relative `import` paths resolve
+    /// against. The CLI calls this with the main script's directory.
+    pub fn set_base_dir(&mut self, dir: PathBuf) {
+        self.base_dir = Some(dir);
+    }
+
+    /// Sets the argument list returned by the `args()` builtin. The
+    /// CLI passes everything after the script path.
+    pub fn set_args(&mut self, args: Vec<String>) {
+        self.script_args = args;
     }
 
     /// Runs one chunk of Gloss source. The global environment and the
@@ -198,7 +222,100 @@ impl Interpreter {
                 };
                 Err(Control::Return(return_value))
             }
+            Stmt::Try {
+                body,
+                catch_variable,
+                catch_body,
+            } => {
+                let try_env = Environment::new_child(self.environment.clone());
+                let result = self.execute_block(body, try_env);
+                match result {
+                    Err(Control::Error(error)) => {
+                        // A runtime error lands here: run the catch
+                        // block with the error message bound. `return`
+                        // and errors raised inside catch itself are
+                        // NOT caught — they keep propagating.
+                        let catch_env = Environment::new_child(self.environment.clone());
+                        catch_env
+                            .borrow_mut()
+                            .define(catch_variable, Value::Str(error.message.clone()));
+                        self.execute_block(catch_body, catch_env)
+                    }
+                    other => other,
+                }
+            }
+            Stmt::Import { path, line } => self.execute_import(path, *line),
         }
+    }
+
+    /// Executes an `import "path"` statement: the file is read, parsed,
+    /// and run in the global environment, so everything it defines
+    /// (functions, variables) becomes available afterwards. Relative
+    /// paths resolve against the importing file's directory (tracked
+    /// in `base_dir`); importing a file that is already being imported
+    /// is a cycle and a runtime error.
+    fn execute_import(&mut self, import_path: &str, line: usize) -> EvalResult<()> {
+        let requested = PathBuf::from(import_path);
+        let resolved = if requested.is_absolute() {
+            requested
+        } else if let Some(base) = &self.base_dir {
+            base.join(requested)
+        } else {
+            requested
+        };
+
+        // Canonicalization both locates the file and gives a stable
+        // identity for cycle detection.
+        let canonical = match std::fs::canonicalize(&resolved) {
+            Ok(path) => path,
+            Err(error) => {
+                return Err(GlossError::runtime(
+                    line,
+                    format!("cannot import '{import_path}': {error}"),
+                )
+                .into());
+            }
+        };
+        if self.import_stack.contains(&canonical) {
+            return Err(GlossError::runtime(
+                line,
+                format!("import cycle detected at '{import_path}'"),
+            )
+            .into());
+        }
+        let source = match std::fs::read_to_string(&canonical) {
+            Ok(source) => source,
+            Err(error) => {
+                return Err(GlossError::runtime(
+                    line,
+                    format!("cannot import '{import_path}': {error}"),
+                )
+                .into());
+            }
+        };
+        let tokens = lexer::tokenize(&source)?;
+        let statements = parser::parse(tokens)?;
+
+        // While the imported file runs, its own relative imports
+        // resolve against its own directory, and its definitions go
+        // into the global environment.
+        self.import_stack.push(canonical.clone());
+        let previous_base = self.base_dir.clone();
+        if let Some(parent) = canonical.parent() {
+            self.base_dir = Some(parent.to_path_buf());
+        }
+        let previous_env = std::mem::replace(&mut self.environment, self.globals.clone());
+        let mut result = Ok(());
+        for statement in &statements {
+            if let Err(control) = self.execute(statement) {
+                result = Err(control);
+                break;
+            }
+        }
+        self.environment = previous_env;
+        self.base_dir = previous_base;
+        self.import_stack.pop();
+        result
     }
 
     /// Runs statements inside `env`, restoring the previous environment
@@ -229,6 +346,19 @@ impl Interpreter {
         match expr {
             Expr::Number(number) => Ok(Value::Number(*number)),
             Expr::Str(text) => Ok(Value::Str(text.clone())),
+            Expr::Interpolated(parts) => {
+                let mut result = String::new();
+                for part in parts {
+                    match part {
+                        InterpPart::Text(text) => result.push_str(text),
+                        InterpPart::Expr(inner) => {
+                            let value = self.evaluate(inner)?;
+                            result.push_str(&value.display());
+                        }
+                    }
+                }
+                Ok(Value::Str(result))
+            }
             Expr::Bool(value) => Ok(Value::Bool(*value)),
             Expr::Nil => Ok(Value::Nil),
 
@@ -269,6 +399,105 @@ impl Interpreter {
                 let new_value = self.evaluate(value)?;
                 self.assign_index(object_value, index_value, new_value.clone(), *line)?;
                 Ok(new_value)
+            }
+
+            Expr::DotAccess {
+                object,
+                name,
+                line,
+            } => {
+                let object_value = self.evaluate(object)?;
+                match &object_value {
+                    Value::Map(entries) => {
+                        // Same rule as index reads: a missing key is nil.
+                        let borrowed = entries.borrow();
+                        Ok(borrowed.get(name).cloned().unwrap_or(Value::Nil))
+                    }
+                    other => Err(GlossError::runtime(
+                        *line,
+                        format!(
+                            "cannot use '.' field access on a value of type {} (only maps have fields)",
+                            other.type_name()
+                        ),
+                    )
+                    .into()),
+                }
+            }
+
+            Expr::DotAssign {
+                object,
+                name,
+                value,
+                line,
+            } => {
+                let object_value = self.evaluate(object)?;
+                let new_value = self.evaluate(value)?;
+                match &object_value {
+                    Value::Map(entries) => {
+                        entries.borrow_mut().insert(name.clone(), new_value.clone());
+                        Ok(new_value)
+                    }
+                    other => Err(GlossError::runtime(
+                        *line,
+                        format!(
+                            "cannot assign a field on a value of type {} (only maps have fields)",
+                            other.type_name()
+                        ),
+                    )
+                    .into()),
+                }
+            }
+
+            Expr::Match {
+                scrutinee,
+                arms,
+                line,
+            } => {
+                let subject = self.evaluate(scrutinee)?;
+                for arm in arms {
+                    let binding = match &arm.pattern {
+                        Pattern::Wildcard => Some(None),
+                        Pattern::Binding(name) => Some(Some((name.clone(), subject.clone()))),
+                        Pattern::Nil => {
+                            if matches!(subject, Value::Nil) {
+                                Some(None)
+                            } else {
+                                None
+                            }
+                        }
+                        Pattern::Bool(expected) => match &subject {
+                            Value::Bool(actual) if actual == expected => Some(None),
+                            _ => None,
+                        },
+                        Pattern::Number(expected) => match &subject {
+                            Value::Number(actual) if actual == expected => Some(None),
+                            _ => None,
+                        },
+                        Pattern::Str(expected) => match &subject {
+                            Value::Str(actual) if actual == expected => Some(None),
+                            _ => None,
+                        },
+                    };
+                    if let Some(binding) = binding {
+                        // A binding pattern's name is visible only
+                        // while its arm body is evaluated.
+                        if let Some((name, value)) = binding {
+                            let arm_env = Environment::new_child(self.environment.clone());
+                            arm_env.borrow_mut().define(&name, value);
+                            let previous =
+                                std::mem::replace(&mut self.environment, arm_env);
+                            let result = self.evaluate(&arm.body);
+                            self.environment = previous;
+                            return result;
+                        }
+                        return self.evaluate(&arm.body);
+                    }
+                }
+                Err(GlossError::runtime(
+                    *line,
+                    "no pattern matched in match expression (add a '_' arm to handle other values)",
+                )
+                .into())
             }
 
             Expr::Binary {
@@ -523,12 +752,27 @@ impl Interpreter {
         match callee {
             Value::Builtin(builtin) => self.call_builtin(builtin, arguments, line),
             Value::Function(function) => {
-                if arguments.len() != function.params.len() {
+                let total = function.params.len();
+                let required = function
+                    .params
+                    .iter()
+                    .filter(|param| param.default.is_none())
+                    .count();
+                if arguments.len() > total {
                     return Err(GlossError::runtime(
                         line,
                         format!(
-                            "expected {} argument(s) but got {}",
-                            function.params.len(),
+                            "expected at most {total} argument(s) but got {}",
+                            arguments.len()
+                        ),
+                    )
+                    .into());
+                }
+                if arguments.len() < required {
+                    return Err(GlossError::runtime(
+                        line,
+                        format!(
+                            "expected at least {required} argument(s) but got {}",
                             arguments.len()
                         ),
                     )
@@ -540,9 +784,33 @@ impl Interpreter {
                 let call_env = Environment::new_child(function.closure.clone());
                 {
                     let mut borrowed = call_env.borrow_mut();
-                    for (param, argument) in function.params.iter().zip(arguments.iter()) {
-                        borrowed.define(param, argument.clone());
+                    for (param, argument) in
+                        function.params.iter().zip(arguments.iter())
+                    {
+                        borrowed.define(&param.name, argument.clone());
                     }
+                }
+                // Omitted arguments fall back to their default
+                // expression, evaluated at call time inside the call
+                // environment (so a default can use earlier parameters
+                // and the function's closure variables).
+                for param in function.params.iter().skip(arguments.len()) {
+                    let default = match &param.default {
+                        Some(default) => default,
+                        None => {
+                            return Err(GlossError::runtime(
+                                line,
+                                format!("missing argument for parameter '{}'", param.name),
+                            )
+                            .into());
+                        }
+                    };
+                    let previous =
+                        std::mem::replace(&mut self.environment, call_env.clone());
+                    let value = self.evaluate(default);
+                    self.environment = previous;
+                    let value = value?;
+                    call_env.borrow_mut().define(&param.name, value);
                 }
                 self.call_depth += 1;
                 let result = self.execute_block(&function.body, call_env);
@@ -567,6 +835,7 @@ impl Interpreter {
         arguments: Vec<Value>,
         line: usize,
     ) -> EvalResult<Value> {
+        let name = builtin.name();
         match builtin {
             Builtin::Print => {
                 let parts: Vec<String> =
@@ -576,13 +845,7 @@ impl Interpreter {
                 Ok(Value::Nil)
             }
             Builtin::Len => {
-                if arguments.len() != 1 {
-                    return Err(GlossError::runtime(
-                        line,
-                        format!("len expects 1 argument but got {}", arguments.len()),
-                    )
-                    .into());
-                }
+                expect_count(name, &arguments, 1, line)?;
                 let length = match &arguments[0] {
                     Value::Str(text) => text.chars().count(),
                     Value::Array(items) => items.borrow().len(),
@@ -601,13 +864,7 @@ impl Interpreter {
                 Ok(Value::Number(length as f64))
             }
             Builtin::Push => {
-                if arguments.len() != 2 {
-                    return Err(GlossError::runtime(
-                        line,
-                        format!("push expects 2 arguments but got {}", arguments.len()),
-                    )
-                    .into());
-                }
+                expect_count(name, &arguments, 2, line)?;
                 match &arguments[0] {
                     Value::Array(items) => {
                         items.borrow_mut().push(arguments[1].clone());
@@ -623,7 +880,303 @@ impl Interpreter {
                     .into()),
                 }
             }
+            Builtin::Type => {
+                expect_count(name, &arguments, 1, line)?;
+                Ok(Value::Str(arguments[0].gloss_type().to_string()))
+            }
+            Builtin::Str => {
+                expect_count(name, &arguments, 1, line)?;
+                Ok(Value::Str(arguments[0].display()))
+            }
+            Builtin::Num => {
+                expect_count(name, &arguments, 1, line)?;
+                match &arguments[0] {
+                    Value::Number(number) => Ok(Value::Number(*number)),
+                    Value::Str(text) => match text.trim().parse::<f64>() {
+                        Ok(number) => Ok(Value::Number(number)),
+                        Err(_) => Err(GlossError::runtime(
+                            line,
+                            format!("num could not parse '{text}' as a number"),
+                        )
+                        .into()),
+                    },
+                    other => Err(GlossError::runtime(
+                        line,
+                        format!(
+                            "num needs a string or a number, got {}",
+                            other.type_name()
+                        ),
+                    )
+                    .into()),
+                }
+            }
+            Builtin::Upper => {
+                expect_count(name, &arguments, 1, line)?;
+                let text = string_arg(name, &arguments[0], line)?;
+                Ok(Value::Str(text.to_uppercase()))
+            }
+            Builtin::Lower => {
+                expect_count(name, &arguments, 1, line)?;
+                let text = string_arg(name, &arguments[0], line)?;
+                Ok(Value::Str(text.to_lowercase()))
+            }
+            Builtin::Trim => {
+                expect_count(name, &arguments, 1, line)?;
+                let text = string_arg(name, &arguments[0], line)?;
+                Ok(Value::Str(text.trim().to_string()))
+            }
+            Builtin::Contains => {
+                expect_count(name, &arguments, 2, line)?;
+                match &arguments[0] {
+                    Value::Str(haystack) => {
+                        let needle = string_arg(name, &arguments[1], line)?;
+                        Ok(Value::Bool(haystack.contains(&needle)))
+                    }
+                    Value::Array(items) => {
+                        let found = items
+                            .borrow()
+                            .iter()
+                            .any(|item| values_equal(item, &arguments[1]));
+                        Ok(Value::Bool(found))
+                    }
+                    other => Err(GlossError::runtime(
+                        line,
+                        format!(
+                            "contains needs a string or an array first, got {}",
+                            other.type_name()
+                        ),
+                    )
+                    .into()),
+                }
+            }
+            Builtin::Split => {
+                expect_count(name, &arguments, 2, line)?;
+                let text = string_arg(name, &arguments[0], line)?;
+                let separator = string_arg(name, &arguments[1], line)?;
+                let pieces: Vec<Value> = text
+                    .split(&separator)
+                    .map(|piece| Value::Str(piece.to_string()))
+                    .collect();
+                Ok(Value::Array(Rc::new(RefCell::new(pieces))))
+            }
+            Builtin::Join => {
+                expect_count(name, &arguments, 2, line)?;
+                let items = array_items(name, &arguments[0], line)?;
+                let separator = string_arg(name, &arguments[1], line)?;
+                let parts: Vec<String> =
+                    items.iter().map(|item| item.display()).collect();
+                Ok(Value::Str(parts.join(&separator)))
+            }
+            Builtin::Abs => {
+                expect_count(name, &arguments, 1, line)?;
+                let number = number_arg(name, &arguments[0], line)?;
+                Ok(Value::Number(number.abs()))
+            }
+            Builtin::Floor => {
+                expect_count(name, &arguments, 1, line)?;
+                let number = number_arg(name, &arguments[0], line)?;
+                Ok(Value::Number(number.floor()))
+            }
+            Builtin::Ceil => {
+                expect_count(name, &arguments, 1, line)?;
+                let number = number_arg(name, &arguments[0], line)?;
+                Ok(Value::Number(number.ceil()))
+            }
+            Builtin::Round => {
+                expect_count(name, &arguments, 1, line)?;
+                let number = number_arg(name, &arguments[0], line)?;
+                Ok(Value::Number(number.round()))
+            }
+            Builtin::Sqrt => {
+                expect_count(name, &arguments, 1, line)?;
+                let number = number_arg(name, &arguments[0], line)?;
+                if number < 0.0 {
+                    return Err(GlossError::runtime(
+                        line,
+                        format!("sqrt needs a non-negative number, got {number}"),
+                    )
+                    .into());
+                }
+                Ok(Value::Number(number.sqrt()))
+            }
+            Builtin::Min => {
+                expect_count(name, &arguments, 2, line)?;
+                let a = number_arg(name, &arguments[0], line)?;
+                let b = number_arg(name, &arguments[1], line)?;
+                Ok(Value::Number(a.min(b)))
+            }
+            Builtin::Max => {
+                expect_count(name, &arguments, 2, line)?;
+                let a = number_arg(name, &arguments[0], line)?;
+                let b = number_arg(name, &arguments[1], line)?;
+                Ok(Value::Number(a.max(b)))
+            }
+            Builtin::Range => {
+                if arguments.is_empty() || arguments.len() > 2 {
+                    return Err(GlossError::runtime(
+                        line,
+                        format!(
+                            "range expects 1 or 2 arguments but got {}",
+                            arguments.len()
+                        ),
+                    )
+                    .into());
+                }
+                let start = if arguments.len() == 1 {
+                    0.0
+                } else {
+                    number_arg(name, &arguments[0], line)?
+                };
+                let end = if arguments.len() == 1 {
+                    number_arg(name, &arguments[0], line)?
+                } else {
+                    number_arg(name, &arguments[1], line)?
+                };
+                if start.fract() != 0.0 || end.fract() != 0.0 {
+                    return Err(GlossError::runtime(
+                        line,
+                        "range bounds must be whole numbers",
+                    )
+                    .into());
+                }
+                let mut values = Vec::new();
+                let mut current = start as i64;
+                while current < end as i64 {
+                    values.push(Value::Number(current as f64));
+                    current += 1;
+                }
+                Ok(Value::Array(Rc::new(RefCell::new(values))))
+            }
+            Builtin::Map => {
+                expect_count(name, &arguments, 2, line)?;
+                let items = array_items(name, &arguments[0], line)?;
+                let function = arguments[1].clone();
+                let mut results = Vec::new();
+                for item in items {
+                    let mapped = self.call_value(function.clone(), vec![item], line)?;
+                    results.push(mapped);
+                }
+                Ok(Value::Array(Rc::new(RefCell::new(results))))
+            }
+            Builtin::Filter => {
+                expect_count(name, &arguments, 2, line)?;
+                let items = array_items(name, &arguments[0], line)?;
+                let function = arguments[1].clone();
+                let mut results = Vec::new();
+                for item in items {
+                    let keep =
+                        self.call_value(function.clone(), vec![item.clone()], line)?;
+                    if keep.is_truthy() {
+                        results.push(item);
+                    }
+                }
+                Ok(Value::Array(Rc::new(RefCell::new(results))))
+            }
+            Builtin::Reduce => {
+                expect_count(name, &arguments, 3, line)?;
+                let items = array_items(name, &arguments[0], line)?;
+                let function = arguments[2].clone();
+                let mut accumulator = arguments[1].clone();
+                for item in items {
+                    accumulator =
+                        self.call_value(function.clone(), vec![accumulator, item], line)?;
+                }
+                Ok(accumulator)
+            }
+            Builtin::ReadFile => {
+                expect_count(name, &arguments, 1, line)?;
+                let path = string_arg(name, &arguments[0], line)?;
+                match std::fs::read_to_string(&path) {
+                    Ok(contents) => Ok(Value::Str(contents)),
+                    Err(error) => Err(GlossError::runtime(
+                        line,
+                        format!("read_file could not read '{path}': {error}"),
+                    )
+                    .into()),
+                }
+            }
+            Builtin::WriteFile => {
+                expect_count(name, &arguments, 2, line)?;
+                let path = string_arg(name, &arguments[0], line)?;
+                // The content is written in its display form, so
+                // numbers and other values work too, not just strings.
+                let content = arguments[1].display();
+                match std::fs::write(&path, content) {
+                    Ok(()) => Ok(Value::Nil),
+                    Err(error) => Err(GlossError::runtime(
+                        line,
+                        format!("write_file could not write '{path}': {error}"),
+                    )
+                    .into()),
+                }
+            }
+            Builtin::Args => {
+                expect_count(name, &arguments, 0, line)?;
+                let values: Vec<Value> = self
+                    .script_args
+                    .iter()
+                    .map(|arg| Value::Str(arg.clone()))
+                    .collect();
+                Ok(Value::Array(Rc::new(RefCell::new(values))))
+            }
         }
+    }
+}
+
+/// Fails unless `arguments` has exactly `expected` entries.
+fn expect_count(
+    name: &str,
+    arguments: &[Value],
+    expected: usize,
+    line: usize,
+) -> EvalResult<()> {
+    if arguments.len() != expected {
+        return Err(GlossError::runtime(
+            line,
+            format!(
+                "{name} expects {expected} argument(s) but got {}",
+                arguments.len()
+            ),
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// Extracts a number argument for a builtin, or a clear error.
+fn number_arg(name: &str, value: &Value, line: usize) -> EvalResult<f64> {
+    match value {
+        Value::Number(number) => Ok(*number),
+        other => Err(GlossError::runtime(
+            line,
+            format!("{name} needs a number, got {}", other.type_name()),
+        )
+        .into()),
+    }
+}
+
+/// Extracts a string argument for a builtin, or a clear error.
+fn string_arg(name: &str, value: &Value, line: usize) -> EvalResult<String> {
+    match value {
+        Value::Str(text) => Ok(text.clone()),
+        other => Err(GlossError::runtime(
+            line,
+            format!("{name} needs a string, got {}", other.type_name()),
+        )
+        .into()),
+    }
+}
+
+/// Copies the items of an array argument for a builtin (the copy lets
+/// callbacks run without holding a borrow on the array).
+fn array_items(name: &str, value: &Value, line: usize) -> EvalResult<Vec<Value>> {
+    match value {
+        Value::Array(items) => Ok(items.borrow().clone()),
+        other => Err(GlossError::runtime(
+            line,
+            format!("{name} needs an array, got {}", other.type_name()),
+        )
+        .into()),
     }
 }
 

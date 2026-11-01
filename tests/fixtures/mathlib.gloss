@@ -1,0 +1,6 @@
+// A tiny library used by the import integration test.
+fn double(x) {
+    return x * 2;
+}
+
+let library_name = "mathlib";

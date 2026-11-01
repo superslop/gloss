@@ -39,3 +39,31 @@ Ana
 31
 3
 {"age": 31, "city": Metropolis, "name": Ana}
+Hello, Gloss! 1 + 2 = 3
+fib(8) = 21
+literal {braces}
+two
+42
+15
+9
+9
+Ana
+32
+Hello, world
+Hello, Gloss
+caught: division by zero
+after try
+number string bool nil
+42!
+4.5
+GLOSS gloss hi
+true
+[a, b, c]
+a-b
+7 2 3 4 3 9
+[0, 1, 2, 3]
+[2, 3, 4]
+[2, 4, 6]
+[2, 4]
+10
+[6, 7]

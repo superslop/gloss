@@ -123,3 +123,63 @@ profile["city"] = "Metropolis";
 print(profile["age"]);    // 31
 print(len(profile));      // 3
 print(profile);           // {"age": 31, "city": Metropolis, "name": Ana}
+
+// --- v0.2: string interpolation ---------------------------------------------------
+let who = "Gloss";
+print("Hello, {who}! 1 + 2 = {1 + 2}");   // Hello, Gloss! 1 + 2 = 3
+print("fib(8) = {fib(8)}");               // fib(8) = 21
+print("literal {{braces}}");              // literal {braces}
+
+// --- v0.2: match expression ------------------------------------------------------------
+let label = match 2 {
+    1 => "one",
+    2 => "two",
+    _ => "other"
+};
+print(label);                             // two
+let bound = match 41 { n => n + 1 };
+print(bound);                             // 42
+
+// --- v0.2: pipe operator -----------------------------------------------------------------
+fn add(a, b) {
+    return a + b;
+}
+print(10 |> add(5));                      // 15
+print(3 |> triple);                       // 9
+print(1 |> add(2) |> triple);             // 9
+
+// --- v0.2: dot access for maps ------------------------------------------------------------
+print(profile.name);                      // Ana
+profile.age = 32;
+print(profile.age);                       // 32
+
+// --- v0.2: default parameters ---------------------------------------------------------------
+fn greet(name = "world") {
+    return "Hello, " + name;
+}
+print(greet());                           // Hello, world
+print(greet("Gloss"));                    // Hello, Gloss
+
+// --- v0.2: try / catch -------------------------------------------------------------------------
+try {
+    print(1 / 0);
+} catch err {
+    print("caught: " + err);              // caught: division by zero
+}
+print("after try");                       // after try
+
+// --- v0.2: standard library ----------------------------------------------------------------------
+print(type(42), type("s"), type(true), type(nil));   // number string bool nil
+print(str(42) + "!");                                // 42!
+print(num("3.5") + 1);                               // 4.5
+print(upper("gloss"), lower("GLOSS"), trim("  hi  "));  // GLOSS gloss hi
+print(contains("hello", "ell"));                     // true
+print(split("a,b,c", ","));                          // [a, b, c]
+print(join(["a", "b"], "-"));                        // a-b
+print(abs(-7), floor(2.9), ceil(2.1), sqrt(16), min(3, 9), max(3, 9));  // 7 2 3 4 3 9
+print(range(4));                                     // [0, 1, 2, 3]
+print(range(2, 5));                                  // [2, 3, 4]
+print(map([1, 2, 3], fn(n) { return n * 2; }));      // [2, 4, 6]
+print(filter([1, 2, 3, 4], fn(n) { return n % 2 == 0; }));  // [2, 4]
+print(reduce([1, 2, 3, 4], 0, fn(acc, n) { return acc + n; }));  // 10
+print([5, 6] |> map(fn(n) { return n + 1; }));       // [6, 7]

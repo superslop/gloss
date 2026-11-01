@@ -1,0 +1,30 @@
+// The v0.2 feature tour from the README, as a runnable program.
+let people = [
+    {"name": "ana", "age": 31},
+    {"name": "bo", "age": 17},
+    {"name": "cy", "age": 25}
+];
+
+fn greet(name = "world") {
+    return "Hello, {name}!";
+}
+
+let adults = people
+    |> filter(fn(p) { return p.age >= 18; })
+    |> map(fn(p) { return upper(p.name); });
+
+print(greet());          // Hello, world!
+print(adults);           // [ANA, CY]
+print(match len(adults) {
+    0 => "none",
+    n => "{n} adults"
+});                      // 2 adults
+
+let total = range(1, 5) |> reduce(0, fn(acc, n) { return acc + n; });
+print("total = {total}");  // total = 10
+
+try {
+    print(total / 0);
+} catch err {
+    print("caught: {err}");  // caught: division by zero
+}

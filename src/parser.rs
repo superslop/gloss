@@ -5,9 +5,9 @@
 //! (lowest) down through logical, equality, comparison, term, factor,
 //! unary, and call (highest) to primary expressions.
 
-use crate::ast::{BinaryOp, Expr, LogicalOp, Stmt, UnaryOp};
+use crate::ast::{BinaryOp, Expr, InterpPart, LogicalOp, MatchArm, Param, Pattern, Stmt, UnaryOp};
 use crate::error::GlossError;
-use crate::lexer::{Token, TokenKind};
+use crate::lexer::{StrPart, Token, TokenKind};
 
 pub struct Parser {
     tokens: Vec<Token>,
@@ -107,6 +107,8 @@ impl Parser {
             TokenKind::While => self.parse_while(),
             TokenKind::For => self.parse_for_in(),
             TokenKind::Return => self.parse_return(),
+            TokenKind::Try => self.parse_try(),
+            TokenKind::Import => self.parse_import(),
             _ => {
                 let expr = self.parse_expression()?;
                 self.expect(&TokenKind::Semicolon, "expected ';' after expression")?;
@@ -149,13 +151,19 @@ impl Parser {
     }
 
     /// Parses the shared `(params) { body }` part of a function.
-    fn parse_function_tail(&mut self) -> Result<(Vec<String>, Vec<Stmt>), GlossError> {
+    /// Each parameter may carry a default: `fn greet(name = "world")`.
+    fn parse_function_tail(&mut self) -> Result<(Vec<Param>, Vec<Stmt>), GlossError> {
         self.expect(&TokenKind::LeftParen, "expected '(' after function name")?;
         let mut params = Vec::new();
         if !matches!(self.current_kind(), TokenKind::RightParen) {
             loop {
-                let (param, _line) = self.expect_identifier("expected a parameter name")?;
-                params.push(param);
+                let (name, _line) = self.expect_identifier("expected a parameter name")?;
+                let default = if self.eat(&TokenKind::Equal) {
+                    Some(self.parse_expression()?)
+                } else {
+                    None
+                };
+                params.push(Param { name, default });
                 if !self.eat(&TokenKind::Comma) {
                     break;
                 }
@@ -205,6 +213,47 @@ impl Parser {
         })
     }
 
+    /// Parses `try { ... } catch err { ... }`.
+    fn parse_try(&mut self) -> Result<Stmt, GlossError> {
+        self.advance(); // 'try'
+        let body = self.parse_block()?;
+        self.expect(&TokenKind::Catch, "expected 'catch' after the try block")?;
+        let (catch_variable, _line) =
+            self.expect_identifier("expected an error variable name after 'catch'")?;
+        let catch_body = self.parse_block()?;
+        Ok(Stmt::Try {
+            body,
+            catch_variable,
+            catch_body,
+        })
+    }
+
+    /// Parses `import "path/to/file.gloss";`.
+    fn parse_import(&mut self) -> Result<Stmt, GlossError> {
+        let import_token = self.advance(); // 'import'
+        let token = self.tokens[self.pos].clone();
+        let path = match token.kind {
+            TokenKind::Str(text) => {
+                self.advance();
+                text
+            }
+            _ => {
+                return Err(GlossError::parse(
+                    token.line,
+                    format!(
+                        "expected a string path after 'import', found '{}'",
+                        token.lexeme
+                    ),
+                ));
+            }
+        };
+        self.expect(&TokenKind::Semicolon, "expected ';' after import")?;
+        Ok(Stmt::Import {
+            path,
+            line: import_token.line,
+        })
+    }
+
     fn parse_return(&mut self) -> Result<Stmt, GlossError> {
         let return_token = self.advance(); // 'return'
         let value = if matches!(self.current_kind(), TokenKind::Semicolon) {
@@ -222,7 +271,51 @@ impl Parser {
     // ----- expressions -----------------------------------------------------
 
     fn parse_expression(&mut self) -> Result<Expr, GlossError> {
-        self.parse_assignment()
+        self.parse_pipe()
+    }
+
+    /// The pipe operator `|>` is the lowest-precedence operator and
+    /// left-associative: `x |> f` is `f(x)`, and `x |> f(a, b)` is
+    /// `f(x, a, b)` — the piped value becomes the first argument.
+    /// Because it binds loosest, parenthesize a piped result when it
+    /// is used inside a larger expression. The transformation into a
+    /// plain call happens here, at parse time.
+    fn parse_pipe(&mut self) -> Result<Expr, GlossError> {
+        let mut left = self.parse_assignment()?;
+        while matches!(self.current_kind(), TokenKind::Pipe) {
+            let pipe_token = self.advance();
+            let target = self.parse_assignment()?;
+            left = match target {
+                Expr::Call {
+                    callee,
+                    arguments,
+                    line,
+                } => {
+                    let mut new_arguments = vec![left];
+                    new_arguments.extend(arguments);
+                    Expr::Call {
+                        callee,
+                        arguments: new_arguments,
+                        line,
+                    }
+                }
+                Expr::Variable { .. }
+                | Expr::Function { .. }
+                | Expr::Index { .. }
+                | Expr::DotAccess { .. } => Expr::Call {
+                    callee: Box::new(target),
+                    arguments: vec![left],
+                    line: pipe_token.line,
+                },
+                _ => {
+                    return Err(GlossError::parse(
+                        pipe_token.line,
+                        "the right side of '|>' must be a function or a function call",
+                    ));
+                }
+            };
+        }
+        Ok(left)
     }
 
     fn parse_assignment(&mut self) -> Result<Expr, GlossError> {
@@ -246,9 +339,19 @@ impl Parser {
                     value: Box::new(value),
                     line,
                 }),
+                Expr::DotAccess {
+                    object,
+                    name,
+                    line,
+                } => Ok(Expr::DotAssign {
+                    object,
+                    name,
+                    value: Box::new(value),
+                    line,
+                }),
                 _ => Err(GlossError::parse(
                     equals.line,
-                    "invalid assignment target (expected a variable or an index)",
+                    "invalid assignment target (expected a variable, an index, or a map field)",
                 )),
             };
         }
@@ -418,11 +521,107 @@ impl Parser {
                     index: Box::new(index),
                     line: bracket.line,
                 };
+            } else if matches!(self.current_kind(), TokenKind::Dot) {
+                let dot = self.advance();
+                let (name, _line) =
+                    self.expect_identifier("expected a field name after '.'")?;
+                expr = Expr::DotAccess {
+                    object: Box::new(expr),
+                    name,
+                    line: dot.line,
+                };
             } else {
                 break;
             }
         }
         Ok(expr)
+    }
+
+    /// Parses a match expression:
+    /// `match value { pattern => body, ..., _ => fallback }`.
+    fn parse_match(&mut self) -> Result<Expr, GlossError> {
+        let match_token = self.advance(); // 'match'
+        let scrutinee = self.parse_expression()?;
+        self.expect(&TokenKind::LeftBrace, "expected '{' after the match value")?;
+        let mut arms = Vec::new();
+        while !matches!(self.current_kind(), TokenKind::RightBrace) {
+            if self.at_end() {
+                return Err(GlossError::parse(
+                    self.current_line(),
+                    "unterminated match expression (missing '}')",
+                ));
+            }
+            let pattern = self.parse_pattern()?;
+            self.expect(&TokenKind::FatArrow, "expected '=>' after a match pattern")?;
+            let body = self.parse_expression()?;
+            arms.push(MatchArm { pattern, body });
+            // Arms are separated by commas; a trailing comma is fine.
+            if !self.eat(&TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect(&TokenKind::RightBrace, "expected '}' after match arms")?;
+        Ok(Expr::Match {
+            scrutinee: Box::new(scrutinee),
+            arms,
+            line: match_token.line,
+        })
+    }
+
+    /// Parses one match pattern: a literal, `_`, or a binding name.
+    fn parse_pattern(&mut self) -> Result<Pattern, GlossError> {
+        let token = self.tokens[self.pos].clone();
+        match token.kind {
+            TokenKind::Number(number) => {
+                self.advance();
+                Ok(Pattern::Number(number))
+            }
+            TokenKind::Minus => {
+                self.advance();
+                let number_token = self.tokens[self.pos].clone();
+                match number_token.kind {
+                    TokenKind::Number(number) => {
+                        self.advance();
+                        Ok(Pattern::Number(-number))
+                    }
+                    _ => Err(GlossError::parse(
+                        number_token.line,
+                        "expected a number after '-' in a match pattern",
+                    )),
+                }
+            }
+            TokenKind::Str(text) => {
+                self.advance();
+                Ok(Pattern::Str(text))
+            }
+            TokenKind::True => {
+                self.advance();
+                Ok(Pattern::Bool(true))
+            }
+            TokenKind::False => {
+                self.advance();
+                Ok(Pattern::Bool(false))
+            }
+            TokenKind::Nil => {
+                self.advance();
+                Ok(Pattern::Nil)
+            }
+            TokenKind::Identifier(name) => {
+                self.advance();
+                if name == "_" {
+                    Ok(Pattern::Wildcard)
+                } else {
+                    Ok(Pattern::Binding(name))
+                }
+            }
+            _ => Err(GlossError::parse(
+                token.line,
+                format!(
+                    "expected a match pattern (a literal, '_', or a name), found '{}'",
+                    token.lexeme
+                ),
+            )),
+        }
     }
 
     fn parse_primary(&mut self) -> Result<Expr, GlossError> {
@@ -436,6 +635,33 @@ impl Parser {
                 self.advance();
                 Ok(Expr::Str(text))
             }
+            TokenKind::InterpStr(parts) => {
+                self.advance();
+                let mut interp_parts = Vec::new();
+                for part in parts {
+                    match part {
+                        StrPart::Text(text) => interp_parts.push(InterpPart::Text(text)),
+                        StrPart::Expr(inner_tokens) => {
+                            // The lexer already tokenized the embedded
+                            // expression; parse it with a sub-parser.
+                            let mut sub_parser = Parser {
+                                tokens: inner_tokens,
+                                pos: 0,
+                            };
+                            let inner = sub_parser.parse_expression()?;
+                            if !sub_parser.at_end() {
+                                return Err(GlossError::parse(
+                                    token.line,
+                                    "unexpected tokens after the expression in string interpolation",
+                                ));
+                            }
+                            interp_parts.push(InterpPart::Expr(Box::new(inner)));
+                        }
+                    }
+                }
+                Ok(Expr::Interpolated(interp_parts))
+            }
+            TokenKind::Match => self.parse_match(),
             TokenKind::True => {
                 self.advance();
                 Ok(Expr::Bool(true))

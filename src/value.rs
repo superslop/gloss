@@ -10,15 +10,40 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::ast::Stmt;
+use crate::ast::{Param, Stmt};
 use crate::environment::Environment;
 
-/// Built-in functions provided by the interpreter itself.
+/// Built-in functions provided by the interpreter itself (the Gloss
+/// standard library). They are ordinary global values, so user code
+/// can pass them to `map`/`filter`/`reduce` or shadow them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Builtin {
     Print,
     Len,
     Push,
+    Type,
+    Str,
+    Num,
+    Upper,
+    Lower,
+    Trim,
+    Contains,
+    Split,
+    Join,
+    Abs,
+    Floor,
+    Ceil,
+    Round,
+    Sqrt,
+    Min,
+    Max,
+    Range,
+    Map,
+    Filter,
+    Reduce,
+    ReadFile,
+    WriteFile,
+    Args,
 }
 
 impl Builtin {
@@ -27,7 +52,62 @@ impl Builtin {
             Builtin::Print => "print",
             Builtin::Len => "len",
             Builtin::Push => "push",
+            Builtin::Type => "type",
+            Builtin::Str => "str",
+            Builtin::Num => "num",
+            Builtin::Upper => "upper",
+            Builtin::Lower => "lower",
+            Builtin::Trim => "trim",
+            Builtin::Contains => "contains",
+            Builtin::Split => "split",
+            Builtin::Join => "join",
+            Builtin::Abs => "abs",
+            Builtin::Floor => "floor",
+            Builtin::Ceil => "ceil",
+            Builtin::Round => "round",
+            Builtin::Sqrt => "sqrt",
+            Builtin::Min => "min",
+            Builtin::Max => "max",
+            Builtin::Range => "range",
+            Builtin::Map => "map",
+            Builtin::Filter => "filter",
+            Builtin::Reduce => "reduce",
+            Builtin::ReadFile => "read_file",
+            Builtin::WriteFile => "write_file",
+            Builtin::Args => "args",
         }
+    }
+
+    /// Every builtin, for registering them all as globals.
+    pub fn all() -> Vec<Builtin> {
+        vec![
+            Builtin::Print,
+            Builtin::Len,
+            Builtin::Push,
+            Builtin::Type,
+            Builtin::Str,
+            Builtin::Num,
+            Builtin::Upper,
+            Builtin::Lower,
+            Builtin::Trim,
+            Builtin::Contains,
+            Builtin::Split,
+            Builtin::Join,
+            Builtin::Abs,
+            Builtin::Floor,
+            Builtin::Ceil,
+            Builtin::Round,
+            Builtin::Sqrt,
+            Builtin::Min,
+            Builtin::Max,
+            Builtin::Range,
+            Builtin::Map,
+            Builtin::Filter,
+            Builtin::Reduce,
+            Builtin::ReadFile,
+            Builtin::WriteFile,
+            Builtin::Args,
+        ]
     }
 }
 
@@ -35,7 +115,7 @@ impl Builtin {
 /// defined in (its closure).
 #[derive(Debug, Clone, PartialEq)]
 pub struct FunctionValue {
-    pub params: Vec<String>,
+    pub params: Vec<Param>,
     pub body: Vec<Stmt>,
     pub closure: Rc<RefCell<Environment>>,
 }
@@ -65,6 +145,21 @@ impl Value {
             Value::Map(_) => "map",
             Value::Function(_) => "function",
             Value::Builtin(_) => "builtin function",
+        }
+    }
+
+    /// The name returned by the `type()` builtin: "number", "string",
+    /// "bool", "nil", "array", "map", or "function".
+    pub fn gloss_type(&self) -> &'static str {
+        match self {
+            Value::Nil => "nil",
+            Value::Bool(_) => "bool",
+            Value::Number(_) => "number",
+            Value::Str(_) => "string",
+            Value::Array(_) => "array",
+            Value::Map(_) => "map",
+            Value::Function(_) => "function",
+            Value::Builtin(_) => "function",
         }
     }
 
