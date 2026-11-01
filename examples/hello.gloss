@@ -1,0 +1,3 @@
+// Hello from Gloss — the smallest Gloss program.
+let name = "world";
+print("Hello, " + name + "!");

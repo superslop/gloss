@@ -1,0 +1,125 @@
+// Gloss showcase: one deterministic program that uses every v0.1 feature.
+// The exact expected output lives in examples/showcase.expected.txt.
+
+// --- Variables, numbers, and arithmetic --------------------------------
+let x = 10;
+let y = 3;
+print(x + y);   // 13
+print(x - y);   // 7
+print(x * y);   // 30
+print(x / y);   // 3.3333333333333335
+print(y / 2);   // 1.5
+print(x % y);   // 1
+print(-x);      // -10
+
+// --- Strings -------------------------------------------------------------
+let greeting = "Hello";
+print(greeting + ", " + "Gloss" + "!");  // Hello, Gloss!
+print("x = " + x);                       // x = 10
+print("first\nsecond");                  // first / second (two lines)
+print("say \"hi\" \\");                  // say "hi" \
+print(len(greeting));                    // 5
+
+// --- Booleans, comparisons, and logic ------------------------------------
+print(x > y);               // true
+print(x <= y);              // false
+print(x == 10);             // true
+print(x != 10);             // false
+print(x >= 10 && y < 10);   // true
+print(x < 5 || y < 10);     // true
+print(!(x == y));           // true
+
+// --- nil -------------------------------------------------------------------
+let nothing = nil;
+print(nothing);          // nil
+print(nothing == nil);   // true
+
+// --- if / else if / else -----------------------------------------------------
+let score = 72;
+if score >= 90 {
+    print("grade A");
+} else if score >= 70 {
+    print("grade B");
+} else {
+    print("grade C");
+}
+
+// --- Assignment and block scope --------------------------------------------
+let counter = 1;
+{
+    let counter = 99;   // shadows the outer counter inside this block
+    print(counter);     // 99
+}
+print(counter);         // 1
+counter = counter + 1;
+print(counter);         // 2
+
+// --- while loop ---------------------------------------------------------------
+let i = 1;
+let total = 0;
+while i <= 5 {
+    total = total + i;
+    i = i + 1;
+}
+print(total);           // 15
+
+// --- Functions and recursion ---------------------------------------------------
+fn fib(n) {
+    if n < 2 {
+        return n;
+    }
+    return fib(n - 1) + fib(n - 2);
+}
+print(fib(10));         // 55
+
+// --- First-class functions -------------------------------------------------------
+fn apply(f, value) {
+    return f(value);
+}
+fn triple(n) {
+    return n * 3;
+}
+print(apply(triple, 14));   // 42
+
+let square = fn(n) {
+    return n * n;
+};
+print(square(9));           // 81
+
+// --- Closures ---------------------------------------------------------------------
+fn make_counter() {
+    let count = 0;
+    fn increment() {
+        count = count + 1;
+        return count;
+    }
+    return increment;
+}
+let next = make_counter();
+print(next());   // 1
+print(next());   // 2
+print(next());   // 3
+
+// --- Arrays -------------------------------------------------------------------------
+let numbers = [10, 20, 30];
+print(numbers[1]);      // 20
+numbers[1] = 25;
+push(numbers, 40);
+print(len(numbers));    // 4
+print(numbers);         // [10, 25, 30, 40]
+
+// --- for-in loop -----------------------------------------------------------------------
+let sum = 0;
+for n in numbers {
+    sum = sum + n;
+}
+print("sum is", sum);   // sum is 105
+
+// --- Maps ---------------------------------------------------------------------------------
+let profile = {"name": "Ana", "age": 30};
+print(profile["name"]);   // Ana
+profile["age"] = 31;
+profile["city"] = "Metropolis";
+print(profile["age"]);    // 31
+print(len(profile));      // 3
+print(profile);           // {"age": 31, "city": Metropolis, "name": Ana}

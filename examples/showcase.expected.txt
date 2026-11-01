@@ -1,0 +1,41 @@
+13
+7
+30
+3.3333333333333335
+1.5
+1
+-10
+Hello, Gloss!
+x = 10
+first
+second
+say "hi" \
+5
+true
+false
+true
+false
+true
+true
+true
+nil
+true
+grade B
+99
+1
+2
+15
+55
+42
+81
+1
+2
+3
+20
+4
+[10, 25, 30, 40]
+sum is 105
+Ana
+31
+3
+{"age": 31, "city": Metropolis, "name": Ana}
