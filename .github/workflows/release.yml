@@ -1,0 +1,49 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.artifact }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: gloss-linux-x86_64
+          - os: windows-latest
+            artifact: gloss-windows-x86_64.exe
+          - os: macos-latest
+            artifact: gloss-macos-aarch64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binary
+        run: cargo build --release --verbose
+
+      - name: Run tests
+        run: cargo test --release --verbose
+
+      - name: Package binary
+        shell: bash
+        run: |
+          mkdir -p dist
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cp target/release/gloss.exe "dist/${{ matrix.artifact }}"
+          else
+            cp target/release/gloss "dist/${{ matrix.artifact }}"
+          fi
+
+      - name: Attach binary to the GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
