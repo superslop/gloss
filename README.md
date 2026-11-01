@@ -79,6 +79,26 @@ print(user["name"], len(user)); // builtins: print (variadic), len
 let nothing = nil;             // nil value
 ```
 
+## Installing
+
+Download a prebuilt binary from the
+[Releases](https://github.com/superslop/gloss/releases) page — Linux
+(x86_64), Windows (x86_64), and macOS (Apple Silicon) builds are attached to
+each release. No Rust installation is needed:
+
+```sh
+chmod +x gloss-linux-x86_64        # Linux/macOS builds only
+./gloss-linux-x86_64 run your-program.gloss
+./gloss-linux-x86_64               # start the REPL
+```
+
+Or build from source with a Rust toolchain:
+
+```sh
+cargo build --release
+./target/release/gloss run examples/showcase.gloss
+```
+
 ## Running
 
 ```sh
@@ -138,3 +158,7 @@ tests/
 3. **Later:** a transpiler to Rust for release builds — Gloss source in,
    native binary out — so the "layer on top of Rust" route is available
    once the language itself is stable.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
