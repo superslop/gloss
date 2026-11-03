@@ -463,13 +463,9 @@ fn find_interp_close(chars: &[char], open: usize) -> Option<usize> {
             if c == '{' {
                 // A nested interpolation inside this inner string:
                 // jump past its matching close brace.
-                match find_interp_close(chars, i) {
-                    Some(end) => {
-                        i = end + 1;
-                        continue;
-                    }
-                    None => return None,
-                }
+                let end = find_interp_close(chars, i)?;
+                i = end + 1;
+                continue;
             }
             if c == '\n' {
                 return None;
