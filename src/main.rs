@@ -101,7 +101,10 @@ fn run_file(path: &str, script_args: &[String]) -> ExitCode {
 /// session, so state persists between lines. Errors are reported and
 /// the loop continues.
 fn run_repl() -> ExitCode {
-    println!("Gloss {} — type Gloss code, Ctrl-D to exit.", env!("CARGO_PKG_VERSION"));
+    println!(
+        "Gloss {} — type Gloss code, Ctrl-D to exit.",
+        env!("CARGO_PKG_VERSION")
+    );
 
     let stdin = std::io::stdin();
     let mut lines = stdin.lock().lines();

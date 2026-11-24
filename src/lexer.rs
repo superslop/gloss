@@ -116,27 +116,51 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, GlossError> {
 
             // Punctuation and operators.
             '(' => {
-                tokens.push(Token::new(TokenKind::LeftParen, "(".to_string(), start_line));
+                tokens.push(Token::new(
+                    TokenKind::LeftParen,
+                    "(".to_string(),
+                    start_line,
+                ));
                 pos += 1;
             }
             ')' => {
-                tokens.push(Token::new(TokenKind::RightParen, ")".to_string(), start_line));
+                tokens.push(Token::new(
+                    TokenKind::RightParen,
+                    ")".to_string(),
+                    start_line,
+                ));
                 pos += 1;
             }
             '{' => {
-                tokens.push(Token::new(TokenKind::LeftBrace, "{".to_string(), start_line));
+                tokens.push(Token::new(
+                    TokenKind::LeftBrace,
+                    "{".to_string(),
+                    start_line,
+                ));
                 pos += 1;
             }
             '}' => {
-                tokens.push(Token::new(TokenKind::RightBrace, "}".to_string(), start_line));
+                tokens.push(Token::new(
+                    TokenKind::RightBrace,
+                    "}".to_string(),
+                    start_line,
+                ));
                 pos += 1;
             }
             '[' => {
-                tokens.push(Token::new(TokenKind::LeftBracket, "[".to_string(), start_line));
+                tokens.push(Token::new(
+                    TokenKind::LeftBracket,
+                    "[".to_string(),
+                    start_line,
+                ));
                 pos += 1;
             }
             ']' => {
-                tokens.push(Token::new(TokenKind::RightBracket, "]".to_string(), start_line));
+                tokens.push(Token::new(
+                    TokenKind::RightBracket,
+                    "]".to_string(),
+                    start_line,
+                ));
                 pos += 1;
             }
             ',' => {
@@ -144,7 +168,11 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, GlossError> {
                 pos += 1;
             }
             ';' => {
-                tokens.push(Token::new(TokenKind::Semicolon, ";".to_string(), start_line));
+                tokens.push(Token::new(
+                    TokenKind::Semicolon,
+                    ";".to_string(),
+                    start_line,
+                ));
                 pos += 1;
             }
             ':' => {
@@ -187,7 +215,11 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, GlossError> {
             }
             '!' => {
                 if peek_next(pos) == Some('=') {
-                    tokens.push(Token::new(TokenKind::BangEqual, "!=".to_string(), start_line));
+                    tokens.push(Token::new(
+                        TokenKind::BangEqual,
+                        "!=".to_string(),
+                        start_line,
+                    ));
                     pos += 2;
                 } else {
                     tokens.push(Token::new(TokenKind::Bang, "!".to_string(), start_line));
@@ -196,10 +228,18 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, GlossError> {
             }
             '=' => {
                 if peek_next(pos) == Some('>') {
-                    tokens.push(Token::new(TokenKind::FatArrow, "=>".to_string(), start_line));
+                    tokens.push(Token::new(
+                        TokenKind::FatArrow,
+                        "=>".to_string(),
+                        start_line,
+                    ));
                     pos += 2;
                 } else if peek_next(pos) == Some('=') {
-                    tokens.push(Token::new(TokenKind::EqualEqual, "==".to_string(), start_line));
+                    tokens.push(Token::new(
+                        TokenKind::EqualEqual,
+                        "==".to_string(),
+                        start_line,
+                    ));
                     pos += 2;
                 } else {
                     tokens.push(Token::new(TokenKind::Equal, "=".to_string(), start_line));
@@ -208,7 +248,11 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, GlossError> {
             }
             '<' => {
                 if peek_next(pos) == Some('=') {
-                    tokens.push(Token::new(TokenKind::LessEqual, "<=".to_string(), start_line));
+                    tokens.push(Token::new(
+                        TokenKind::LessEqual,
+                        "<=".to_string(),
+                        start_line,
+                    ));
                     pos += 2;
                 } else {
                     tokens.push(Token::new(TokenKind::Less, "<".to_string(), start_line));
@@ -388,9 +432,9 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, GlossError> {
                         }
                     }
                 }
-                let number: f64 = text.parse().map_err(|_| {
-                    GlossError::lex(start_line, format!("invalid number '{text}'"))
-                })?;
+                let number: f64 = text
+                    .parse()
+                    .map_err(|_| GlossError::lex(start_line, format!("invalid number '{text}'")))?;
                 tokens.push(Token::new(TokenKind::Number(number), text, start_line));
             }
 

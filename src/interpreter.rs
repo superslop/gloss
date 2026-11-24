@@ -366,17 +366,18 @@ impl Interpreter {
                 let value = self.environment.borrow().get(name);
                 match value {
                     Some(value) => Ok(value),
-                    None => Err(GlossError::runtime(
-                        *line,
-                        format!("undefined variable '{name}'"),
-                    )
-                    .into()),
+                    None => Err(
+                        GlossError::runtime(*line, format!("undefined variable '{name}'")).into(),
+                    ),
                 }
             }
 
             Expr::Assign { name, value, line } => {
                 let new_value = self.evaluate(value)?;
-                let assigned = self.environment.borrow_mut().assign(name, new_value.clone());
+                let assigned = self
+                    .environment
+                    .borrow_mut()
+                    .assign(name, new_value.clone());
                 if assigned {
                     Ok(new_value)
                 } else {
@@ -401,11 +402,7 @@ impl Interpreter {
                 Ok(new_value)
             }
 
-            Expr::DotAccess {
-                object,
-                name,
-                line,
-            } => {
+            Expr::DotAccess { object, name, line } => {
                 let object_value = self.evaluate(object)?;
                 match &object_value {
                     Value::Map(entries) => {
@@ -484,8 +481,7 @@ impl Interpreter {
                         if let Some((name, value)) = binding {
                             let arm_env = Environment::new_child(self.environment.clone());
                             arm_env.borrow_mut().define(&name, value);
-                            let previous =
-                                std::mem::replace(&mut self.environment, arm_env);
+                            let previous = std::mem::replace(&mut self.environment, arm_env);
                             let result = self.evaluate(&arm.body);
                             self.environment = previous;
                             return result;
@@ -614,11 +610,7 @@ impl Interpreter {
                 (Value::Str(_), _) | (_, Value::Str(_)) => {
                     // A string on either side means concatenation; the
                     // other side is converted with its display form.
-                    Ok(Value::Str(format!(
-                        "{}{}",
-                        left.display(),
-                        right.display()
-                    )))
+                    Ok(Value::Str(format!("{}{}", left.display(), right.display())))
                 }
                 _ => Err(GlossError::runtime(
                     line,
@@ -652,10 +644,7 @@ impl Interpreter {
                     _ => unreachable!(),
                 }
             }
-            BinaryOp::Less
-            | BinaryOp::LessEqual
-            | BinaryOp::Greater
-            | BinaryOp::GreaterEqual => {
+            BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual => {
                 let result = match (&left, &right) {
                     (Value::Number(a), Value::Number(b)) => Some(compare(op, a, b)),
                     (Value::Str(a), Value::Str(b)) => Some(compare_str(op, a, b)),
@@ -784,9 +773,7 @@ impl Interpreter {
                 let call_env = Environment::new_child(function.closure.clone());
                 {
                     let mut borrowed = call_env.borrow_mut();
-                    for (param, argument) in
-                        function.params.iter().zip(arguments.iter())
-                    {
+                    for (param, argument) in function.params.iter().zip(arguments.iter()) {
                         borrowed.define(&param.name, argument.clone());
                     }
                 }
@@ -805,8 +792,7 @@ impl Interpreter {
                             .into());
                         }
                     };
-                    let previous =
-                        std::mem::replace(&mut self.environment, call_env.clone());
+                    let previous = std::mem::replace(&mut self.environment, call_env.clone());
                     let value = self.evaluate(default);
                     self.environment = previous;
                     let value = value?;
@@ -838,8 +824,7 @@ impl Interpreter {
         let name = builtin.name();
         match builtin {
             Builtin::Print => {
-                let parts: Vec<String> =
-                    arguments.iter().map(|value| value.display()).collect();
+                let parts: Vec<String> = arguments.iter().map(|value| value.display()).collect();
                 self.output.push_str(&parts.join(" "));
                 self.output.push('\n');
                 Ok(Value::Nil)
@@ -902,10 +887,7 @@ impl Interpreter {
                     },
                     other => Err(GlossError::runtime(
                         line,
-                        format!(
-                            "num needs a string or a number, got {}",
-                            other.type_name()
-                        ),
+                        format!("num needs a string or a number, got {}", other.type_name()),
                     )
                     .into()),
                 }
@@ -963,8 +945,7 @@ impl Interpreter {
                 expect_count(name, &arguments, 2, line)?;
                 let items = array_items(name, &arguments[0], line)?;
                 let separator = string_arg(name, &arguments[1], line)?;
-                let parts: Vec<String> =
-                    items.iter().map(|item| item.display()).collect();
+                let parts: Vec<String> = items.iter().map(|item| item.display()).collect();
                 Ok(Value::Str(parts.join(&separator)))
             }
             Builtin::Abs => {
@@ -1015,10 +996,7 @@ impl Interpreter {
                 if arguments.is_empty() || arguments.len() > 2 {
                     return Err(GlossError::runtime(
                         line,
-                        format!(
-                            "range expects 1 or 2 arguments but got {}",
-                            arguments.len()
-                        ),
+                        format!("range expects 1 or 2 arguments but got {}", arguments.len()),
                     )
                     .into());
                 }
@@ -1033,11 +1011,9 @@ impl Interpreter {
                     number_arg(name, &arguments[1], line)?
                 };
                 if start.fract() != 0.0 || end.fract() != 0.0 {
-                    return Err(GlossError::runtime(
-                        line,
-                        "range bounds must be whole numbers",
-                    )
-                    .into());
+                    return Err(
+                        GlossError::runtime(line, "range bounds must be whole numbers").into(),
+                    );
                 }
                 let mut values = Vec::new();
                 let mut current = start as i64;
@@ -1064,8 +1040,7 @@ impl Interpreter {
                 let function = arguments[1].clone();
                 let mut results = Vec::new();
                 for item in items {
-                    let keep =
-                        self.call_value(function.clone(), vec![item.clone()], line)?;
+                    let keep = self.call_value(function.clone(), vec![item.clone()], line)?;
                     if keep.is_truthy() {
                         results.push(item);
                     }
@@ -1124,12 +1099,7 @@ impl Interpreter {
 }
 
 /// Fails unless `arguments` has exactly `expected` entries.
-fn expect_count(
-    name: &str,
-    arguments: &[Value],
-    expected: usize,
-    line: usize,
-) -> EvalResult<()> {
+fn expect_count(name: &str, arguments: &[Value], expected: usize, line: usize) -> EvalResult<()> {
     if arguments.len() != expected {
         return Err(GlossError::runtime(
             line,

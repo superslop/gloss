@@ -183,11 +183,7 @@ impl Value {
             Value::Number(number) => format_number(*number),
             Value::Str(text) => text.clone(),
             Value::Array(items) => {
-                let parts: Vec<String> = items
-                    .borrow()
-                    .iter()
-                    .map(|item| item.display())
-                    .collect();
+                let parts: Vec<String> = items.borrow().iter().map(|item| item.display()).collect();
                 format!("[{}]", parts.join(", "))
             }
             Value::Map(entries) => {

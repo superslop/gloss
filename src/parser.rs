@@ -339,11 +339,7 @@ impl Parser {
                     value: Box::new(value),
                     line,
                 }),
-                Expr::DotAccess {
-                    object,
-                    name,
-                    line,
-                } => Ok(Expr::DotAssign {
+                Expr::DotAccess { object, name, line } => Ok(Expr::DotAssign {
                     object,
                     name,
                     value: Box::new(value),
@@ -523,8 +519,7 @@ impl Parser {
                 };
             } else if matches!(self.current_kind(), TokenKind::Dot) {
                 let dot = self.advance();
-                let (name, _line) =
-                    self.expect_identifier("expected a field name after '.'")?;
+                let (name, _line) = self.expect_identifier("expected a field name after '.'")?;
                 expr = Expr::DotAccess {
                     object: Box::new(expr),
                     name,

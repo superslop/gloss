@@ -38,10 +38,7 @@ pub fn run_source(source: &str) -> Result<String, GlossError> {
 
 /// Runs Gloss source with a base directory for relative `import`
 /// paths (the directory of the main script, when there is one).
-pub fn run_source_in_dir(
-    source: &str,
-    base_dir: &std::path::Path,
-) -> Result<String, GlossError> {
+pub fn run_source_in_dir(source: &str, base_dir: &std::path::Path) -> Result<String, GlossError> {
     let mut interpreter = Interpreter::new();
     interpreter.set_base_dir(base_dir.to_path_buf());
     interpreter.interpret(source)?;
